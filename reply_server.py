@@ -501,12 +501,58 @@ async def login(request: LoginRequest):
 
     # 判断登录方式
     if request.username and request.password:
+        # 对输入做一次轻量规范化（避免复制/粘贴带来的前后空格导致无法登录）
+        username = request.username.strip()
+        password = request.password
+
         # 用户名/密码登录
-        logger.info(f"【{request.username}】尝试用户名登录")
+        logger.info(f"【{username}】尝试用户名登录")
+
+        # 管理员兜底：若环境变量已配置 ADMIN_USERNAME / ADMIN_PASSWORD，则优先按环境变量校验。
+        # 目的：避免数据库密码与环境变量不一致时出现“账号/密码对上了但无法登录”的问题。
+        admin_password = (os.getenv('ADMIN_PASSWORD') or '').strip()
+        if username == ADMIN_USERNAME and admin_password and password.strip() == admin_password:
+            try:
+                # 确保管理员账号在数据库中存在且为启用状态，并同步密码（不输出明文）。
+                user = db_manager.get_user_by_username(username)
+                if not user:
+                    admin_email = username if "@" in username else f"{username}@localhost"
+                    db_manager.create_user(username=username, email=admin_email, password=admin_password)
+                    user = db_manager.get_user_by_username(username)
+
+                if user:
+                    db_manager.update_user_password(username, admin_password)
+                    try:
+                        with db_manager.lock:
+                            cursor = db_manager.conn.cursor()
+                            cursor.execute("UPDATE users SET is_active = TRUE WHERE username = ?", (username,))
+                            db_manager.conn.commit()
+                    except Exception:
+                        pass
+
+                    token = generate_token()
+                    SESSION_TOKENS[token] = {
+                        'user_id': user['id'],
+                        'username': user['username'],
+                        'is_admin': True,
+                        'timestamp': time.time()
+                    }
+                    logger.info(f"【{user['username']}#{user['id']}】登录成功（管理员）")
+                    return LoginResponse(
+                        success=True,
+                        token=token,
+                        message="登录成功",
+                        user_id=user['id'],
+                        username=user['username'],
+                        is_admin=True
+                    )
+            except Exception:
+                # 兜底：管理员环境变量校验通过但同步数据库失败时，仍允许走后续数据库验证逻辑
+                pass
 
         # 统一使用用户表验证（包括admin用户）
-        if db_manager.verify_user_password(request.username, request.password):
-            user = db_manager.get_user_by_username(request.username)
+        if db_manager.verify_user_password(username, password):
+            user = db_manager.get_user_by_username(username)
             if user:
                 # 生成token
                 token = generate_token()
@@ -532,7 +578,7 @@ async def login(request: LoginRequest):
                     is_admin=(user['username'] == ADMIN_USERNAME)
                 )
 
-        logger.warning(f"【{request.username}】登录失败：用户名或密码错误")
+        logger.warning(f"【{username}】登录失败：用户名或密码错误")
         return LoginResponse(
             success=False,
             message="用户名或密码错误"
