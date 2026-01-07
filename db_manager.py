@@ -750,15 +750,21 @@ class DBManager:
                     if row and row[0] != env_admin_password_hash:
                         try:
                             cursor.execute(
-                                "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?",
+                                "UPDATE users SET password_hash = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP WHERE username = ?",
                                 (env_admin_password_hash, admin_username),
                             )
                         except sqlite3.OperationalError:
                             cursor.execute(
-                                "UPDATE users SET password_hash = ? WHERE username = ?",
+                                "UPDATE users SET password_hash = ?, is_active = 1 WHERE username = ?",
                                 (env_admin_password_hash, admin_username),
                             )
                         logger.info(f"已将管理员({admin_username})密码同步为 ADMIN_PASSWORD 环境变量值")
+                    else:
+                        # 兜底：确保管理员处于启用状态，否则 verify_user_password 会拒绝登录
+                        try:
+                            cursor.execute("UPDATE users SET is_active = TRUE WHERE username = ?", (admin_username,))
+                        except sqlite3.OperationalError:
+                            cursor.execute("UPDATE users SET is_active = 1 WHERE username = ?", (admin_username,))
 
                 # 将历史cookies数据绑定到admin用户（如果user_id列不存在）
                 try:
