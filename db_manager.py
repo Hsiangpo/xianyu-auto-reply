@@ -739,6 +739,27 @@ class DBManager:
             if admin_user:
                 admin_user_id = admin_user[0]
 
+                # 若 DB 已存在，修改 ADMIN_PASSWORD 仅更新环境变量并不会自动更新数据库密码；
+                # 为了避免“账号/密码对上了但无法登录”的困惑，这里以 ADMIN_PASSWORD 为准同步管理员密码。
+                # 注意：不会打印密码明文，仅更新哈希。
+                env_admin_password = (os.getenv('ADMIN_PASSWORD') or '').strip()
+                if env_admin_password:
+                    env_admin_password_hash = hashlib.sha256(env_admin_password.encode()).hexdigest()
+                    cursor.execute("SELECT password_hash FROM users WHERE username = ?", (admin_username,))
+                    row = cursor.fetchone()
+                    if row and row[0] != env_admin_password_hash:
+                        try:
+                            cursor.execute(
+                                "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?",
+                                (env_admin_password_hash, admin_username),
+                            )
+                        except sqlite3.OperationalError:
+                            cursor.execute(
+                                "UPDATE users SET password_hash = ? WHERE username = ?",
+                                (env_admin_password_hash, admin_username),
+                            )
+                        logger.info(f"已将管理员({admin_username})密码同步为 ADMIN_PASSWORD 环境变量值")
+
                 # 将历史cookies数据绑定到admin用户（如果user_id列不存在）
                 try:
                     self._execute_sql(cursor, "SELECT user_id FROM cookies LIMIT 1")
