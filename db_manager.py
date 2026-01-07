@@ -644,9 +644,12 @@ class DBManager:
             current_version = self.get_system_setting("db_version") or "1.0"
             logger.info(f"当前数据库版本: {current_version}")
 
+            logger.info("开始检查管理员账号...")
+            self.update_admin_user_id(cursor)
+            logger.info("管理员账号检查完成")
+
             if current_version == "1.0":
                 logger.info("开始升级数据库到版本1.0...")
-                self.update_admin_user_id(cursor)
                 self.set_system_setting("db_version", "1.0", "数据库版本号")
                 logger.info("数据库升级到版本1.0完成")
             
