@@ -9,9 +9,12 @@ import string
 import aiohttp
 import io
 import base64
+from cryptography.fernet import Fernet, InvalidToken
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Dict, Optional, Any
 from loguru import logger
+
+ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin').strip() or 'admin'
 
 class DBManager:
     """SQLite数据库管理，持久化存储Cookie和关键字"""
@@ -49,6 +52,8 @@ class DBManager:
         logger.info(f"数据库路径: {self.db_path}")
         self.conn = None
         self.lock = threading.RLock()  # 使用可重入锁保护数据库操作
+        self._password_cipher_warned = False
+        self._password_decrypt_warned = False
 
         # SQL日志配置 - 默认启用
         self.sql_log_enabled = True  # 默认启用SQL日志
@@ -57,6 +62,63 @@ class DBManager:
         # 允许通过环境变量覆盖默认设置
         if os.getenv('SQL_LOG_ENABLED'):
             self.sql_log_enabled = os.getenv('SQL_LOG_ENABLED', 'true').lower() == 'true'
+
+    def _get_password_cipher(self) -> Optional[Fernet]:
+        key = os.getenv('PASSWORD_ENCRYPTION_KEY')
+        if not key:
+            jwt_key = os.getenv('JWT_SECRET_KEY')
+            if jwt_key:
+                key = base64.urlsafe_b64encode(hashlib.sha256(jwt_key.encode()).digest()).decode()
+        if not key:
+            return None
+        try:
+            key_bytes = key.encode()
+            if len(key_bytes) != 44:
+                key_bytes = base64.urlsafe_b64encode(hashlib.sha256(key_bytes).digest())
+            return Fernet(key_bytes)
+        except Exception as e:
+            if not self._password_cipher_warned:
+                logger.error(f"PASSWORD_ENCRYPTION_KEY 无效，无法加解密登录密码: {e}")
+                self._password_cipher_warned = True
+            return None
+
+    def _encrypt_password(self, password: str) -> str:
+        if not password:
+            return ""
+        if password.startswith("enc:"):
+            return password
+        cipher = self._get_password_cipher()
+        if not cipher:
+            if not self._password_cipher_warned:
+                logger.warning("未配置 PASSWORD_ENCRYPTION_KEY 或 JWT_SECRET_KEY，登录密码将以明文保存")
+                self._password_cipher_warned = True
+            return password
+        try:
+            token = cipher.encrypt(password.encode()).decode()
+            return f"enc:{token}"
+        except Exception as e:
+            logger.error(f"登录密码加密失败: {e}")
+            return password
+
+    def _decrypt_password(self, stored_value: str) -> str:
+        if not stored_value:
+            return ""
+        if stored_value.startswith("enc:"):
+            cipher = self._get_password_cipher()
+            if not cipher:
+                if not self._password_decrypt_warned:
+                    logger.error("发现加密登录密码但未配置解密密钥")
+                    self._password_decrypt_warned = True
+                return ""
+            try:
+                return cipher.decrypt(stored_value[4:].encode()).decode()
+            except InvalidToken:
+                logger.error("登录密码解密失败，密钥可能不匹配")
+                return ""
+            except Exception as e:
+                logger.error(f"登录密码解密失败: {e}")
+                return ""
+        return stored_value
         if os.getenv('SQL_LOG_LEVEL'):
             self.sql_log_level = os.getenv('SQL_LOG_LEVEL', 'INFO').upper()
 
@@ -635,21 +697,41 @@ class DBManager:
         """更新admin用户ID"""
         try:
             logger.info("开始更新admin用户ID...")
+            admin_username = ADMIN_USERNAME
+            legacy_admin_username = 'admin'
+
             # 创建默认admin用户（只在首次初始化时创建）
-            cursor.execute('SELECT COUNT(*) FROM users WHERE username = ?', ('admin',))
+            cursor.execute('SELECT COUNT(*) FROM users WHERE username = ?', (admin_username,))
             admin_exists = cursor.fetchone()[0] > 0
 
             if not admin_exists:
-                # 首次创建admin用户，设置默认密码
-                default_password_hash = hashlib.sha256("admin123".encode()).hexdigest()
-                cursor.execute('''
-                INSERT INTO users (username, email, password_hash) VALUES
-                ('admin', 'admin@localhost', ?)
-                ''', (default_password_hash,))
-                logger.info("创建默认admin用户，密码: admin123")
+                if admin_username != legacy_admin_username:
+                    cursor.execute('SELECT id FROM users WHERE username = ?', (legacy_admin_username,))
+                    legacy_admin = cursor.fetchone()
+                    if legacy_admin:
+                        cursor.execute(
+                            "UPDATE users SET username = ? WHERE username = ?",
+                            (admin_username, legacy_admin_username)
+                        )
+                        logger.info(f"已将管理员用户名从 {legacy_admin_username} 更新为 {admin_username}")
+                        admin_exists = True
+
+                if not admin_exists:
+                    # 首次创建admin用户，设置默认密码
+                    import os
+                    default_password = os.getenv('ADMIN_PASSWORD')
+                    if not default_password:
+                        raise RuntimeError("ADMIN_PASSWORD 未设置，无法初始化管理员账号")
+                    default_password_hash = hashlib.sha256(default_password.encode()).hexdigest()
+                    admin_email = f"{admin_username}@localhost"
+                    cursor.execute('''
+                    INSERT INTO users (username, email, password_hash) VALUES
+                    (?, ?, ?)
+                    ''', (admin_username, admin_email, default_password_hash))
+                    logger.info(f"创建默认管理员用户({admin_username})，请通过环境变量 ADMIN_PASSWORD 设置安全密码")
 
             # 获取admin用户ID，用于历史数据绑定
-            self._execute_sql(cursor, "SELECT id FROM users WHERE username = 'admin'")
+            self._execute_sql(cursor, "SELECT id FROM users WHERE username = ?", (admin_username,))
             admin_user = cursor.fetchone()
             if admin_user:
                 admin_user_id = admin_user[0]
@@ -1196,7 +1278,7 @@ class DBManager:
                         user_id = existing[0]
                     else:
                         # 获取admin用户ID作为默认值
-                        self._execute_sql(cursor, "SELECT id FROM users WHERE username = 'admin'")
+                        self._execute_sql(cursor, "SELECT id FROM users WHERE username = ?", (ADMIN_USERNAME,))
                         admin_user = cursor.fetchone()
                         user_id = admin_user[0] if admin_user else 1
 
@@ -1301,6 +1383,13 @@ class DBManager:
                 self._execute_sql(cursor, "SELECT id, value, user_id, auto_confirm, remark, pause_duration, username, password, show_browser, created_at FROM cookies WHERE id = ?", (cookie_id,))
                 result = cursor.fetchone()
                 if result:
+                    stored_password = result[7] or ''
+                    password = self._decrypt_password(stored_password)
+                    if stored_password and not stored_password.startswith("enc:"):
+                        encrypted_password = self._encrypt_password(stored_password)
+                        if encrypted_password.startswith("enc:") and encrypted_password != stored_password:
+                            self._execute_sql(cursor, "UPDATE cookies SET password = ? WHERE id = ?", (encrypted_password, cookie_id))
+                            self.conn.commit()
                     return {
                         'id': result[0],
                         'value': result[1],
@@ -1309,7 +1398,7 @@ class DBManager:
                         'remark': result[4] or '',
                         'pause_duration': result[5] if result[5] is not None else 10,  # 0是有效值，表示不暂停
                         'username': result[6] or '',
-                        'password': result[7] or '',
+                        'password': password,
                         'show_browser': bool(result[8]) if result[8] is not None else False,
                         'created_at': result[9]
                     }
@@ -1400,7 +1489,7 @@ class DBManager:
                     # 如果没有提供user_id，尝试从现有记录获取，否则使用admin用户ID
                     if user_id is None:
                         # 获取admin用户ID作为默认值
-                        self._execute_sql(cursor, "SELECT id FROM users WHERE username = 'admin'")
+                        self._execute_sql(cursor, "SELECT id FROM users WHERE username = ?", (ADMIN_USERNAME,))
                         admin_user = cursor.fetchone()
                         user_id = admin_user[0] if admin_user else 1
                     
@@ -1415,6 +1504,7 @@ class DBManager:
                         insert_placeholders.append('?')
                     
                     if password is not None:
+                        password = self._encrypt_password(password)
                         insert_fields.append('password')
                         insert_values.append(password)
                         insert_placeholders.append('?')
@@ -1444,6 +1534,7 @@ class DBManager:
                         params.append(username)
                     
                     if password is not None:
+                        password = self._encrypt_password(password)
                         update_fields.append("password = ?")
                         params.append(password)
                     
@@ -2870,36 +2961,20 @@ class DBManager:
             return await self._send_email_via_api(email, subject, text_content)
 
     async def _send_email_via_api(self, email: str, subject: str, text_content: str) -> bool:
-        """使用API方式发送邮件"""
+        """使用SMTP方式发送邮件（已禁用外部API以保护隐私）"""
+        # 安全修复：移除外部API调用，仅使用本地SMTP
+        logger.warning("外部邮件API已禁用，请配置本地SMTP发送邮件")
+        
+        # 尝试使用SMTP发送
         try:
-            import aiohttp
-
-            # 使用GET请求发送邮件
-            api_url = "https://dy.zhinianboke.com/api/emailSend"
-            params = {
-                'subject': subject,
-                'receiveUser': email,
-                'sendHtml': text_content
-            }
-
-            async with aiohttp.ClientSession() as session:
-                try:
-                    logger.info(f"使用API发送验证码邮件: {email}")
-                    async with session.get(api_url, params=params, timeout=15) as response:
-                        response_text = await response.text()
-                        logger.info(f"邮件API响应: {response.status}")
-
-                        if response.status == 200:
-                            logger.info(f"验证码邮件发送成功(API): {email}")
-                            return True
-                        else:
-                            logger.error(f"API发送验证码邮件失败: {email}, 状态码: {response.status}, 响应: {response_text[:200]}")
-                            return False
-                except Exception as e:
-                    logger.error(f"API邮件发送异常: {email}, 错误: {e}")
-                    return False
+            smtp_server = self.get_system_setting('smtp_server')
+            if smtp_server:
+                return await self._send_email_via_smtp(email, subject, text_content)
+            else:
+                logger.error("邮件发送失败：SMTP未配置，外部API已禁用")
+                return False
         except Exception as e:
-            logger.error(f"API邮件发送方法异常: {e}")
+            logger.error(f"SMTP邮件发送异常: {e}")
             return False
 
     # ==================== 卡券管理方法 ====================

@@ -22,7 +22,6 @@ import { Users } from '@/pages/admin/Users'
 import { Logs } from '@/pages/admin/Logs'
 import { RiskLogs } from '@/pages/admin/RiskLogs'
 import { DataManagement } from '@/pages/admin/DataManagement'
-import { DisclaimerModal } from '@/components/common/DisclaimerModal'
 import { verifyToken } from '@/api/auth'
 import { Toast } from '@/components/common/Toast'
 
@@ -30,7 +29,6 @@ import { Toast } from '@/components/common/Toast'
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, setAuth, clearAuth, token: storeToken, _hasHydrated } = useAuthStore()
   const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking')
-  const [showDisclaimer, setShowDisclaimer] = useState(false)
   const checkingRef = useRef(false)
 
   useEffect(() => {
@@ -66,13 +64,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
             is_admin: result.is_admin || false,
           })
           setAuthState('authenticated')
-          
-          // 检查是否已同意免责声明（针对每个用户）
-          const disclaimerKey = `disclaimer_accepted_${result.user_id}`
-          const disclaimerAccepted = localStorage.getItem(disclaimerKey)
-          if (!disclaimerAccepted) {
-            setShowDisclaimer(true)
-          }
         } else {
           clearAuth()
           setAuthState('unauthenticated')
@@ -88,20 +79,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     checkAuth()
   }, [_hasHydrated, isAuthenticated, storeToken, setAuth, clearAuth])
 
-  const handleDisclaimerAgree = () => {
-    // 使用用户ID存储免责声明同意状态
-    const userId = useAuthStore.getState().user?.user_id
-    if (userId) {
-      localStorage.setItem(`disclaimer_accepted_${userId}`, 'true')
-    }
-    setShowDisclaimer(false)
-  }
-
-  const handleDisclaimerDisagree = () => {
-    clearAuth()
-    setShowDisclaimer(false)
-    setAuthState('unauthenticated')
-  }
 
   // 等待 hydration 或检查完成
   if (!_hasHydrated || authState === 'checking') {
@@ -116,16 +93,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />
   }
 
-  return (
-    <>
-      {children}
-      <DisclaimerModal
-        isOpen={showDisclaimer}
-        onAgree={handleDisclaimerAgree}
-        onDisagree={handleDisclaimerDisagree}
-      />
-    </>
-  )
+  return <>{children}</>
 }
 
 function App() {

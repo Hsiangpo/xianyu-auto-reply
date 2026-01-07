@@ -167,9 +167,9 @@ show_access_info() {
     fi
     
     echo ""
-    echo "🔐 默认登录信息:"
+    echo "🔐 登录信息:"
     echo "   用户名: admin"
-    echo "   密码:   admin123"
+    echo "   密码:   使用 ADMIN_PASSWORD 环境变量设置"
     echo ""
     echo "📊 管理命令:"
     echo "   查看状态: $0 status"

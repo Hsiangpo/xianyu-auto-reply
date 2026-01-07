@@ -25,7 +25,7 @@ echo "✓ 目录创建完成"
 
 # 设置目录权限
 echo "设置目录权限..."
-chmod 777 /app/data /app/logs /app/backups /app/static/uploads /app/static/uploads/images
+chmod 755 /app/data /app/logs /app/backups /app/static/uploads /app/static/uploads/images
 chmod 777 /app/trajectory_history 2>/dev/null || true
 echo "✓ 权限设置完成"
 

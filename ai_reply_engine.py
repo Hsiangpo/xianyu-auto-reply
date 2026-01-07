@@ -222,9 +222,35 @@ class AIReplyEngine:
     def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
         """调用OpenAI兼容API"""
         try:
-            logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
+            model_name = settings['model_name']
+            logger.info(f"调用OpenAI API: model={model_name}, base_url={settings.get('base_url', 'default')}")
+            
+            # 特殊处理 gpt-5.2-codex 模型
+            if model_name == 'gpt-5.2-codex':
+                try:
+                    # 提取最后一条用户消息作为 input
+                    last_user_message = next((m['content'] for m in reversed(messages) if m['role'] == 'user'), "")
+                    
+                    # 如果有系统提示词，拼接到 input 前面
+                    system_prompt = next((m['content'] for m in messages if m['role'] == 'system'), "")
+                    if system_prompt:
+                        input_text = f"System: {system_prompt}\nUser: {last_user_message}"
+                    else:
+                        input_text = last_user_message
+
+                    logger.info(f"使用 responses.create 接口调用 {model_name} (effort=xhigh)")
+                    response = client.responses.create(
+                        model=model_name,
+                        input=input_text,
+                        reasoning={"effort": "xhigh"}
+                    )
+                    return response.output_text.strip()
+                except Exception as e:
+                    logger.warning(f"responses.create 调用失败，尝试回退到 chat.completions: {e}")
+                    # 如果失败，回退到下面的标准调用
+
             response = client.chat.completions.create(
-                model=settings['model_name'],
+                model=model_name,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature

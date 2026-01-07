@@ -40,8 +40,8 @@ except ImportError:
 KEYWORDS_FILE = Path(__file__).parent / "回复关键字.txt"
 
 # 简单的用户认证配置
-ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123"  # 系统初始化时的默认密码
+ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin').strip() or 'admin'
+DEFAULT_ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')  # 必须通过环境变量设置安全密码
 SESSION_TOKENS = {}  # 存储会话token: {token: {'user_id': int, 'username': str, 'timestamp': float}}
 TOKEN_EXPIRE_TIME = 24 * 60 * 60  # token过期时间：24小时
 
@@ -238,7 +238,7 @@ def get_user_log_prefix(user_info: Dict[str, Any] = None) -> str:
 
 def require_admin(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     """要求管理员权限"""
-    if current_user['username'] != 'admin':
+    if current_user['username'] != ADMIN_USERNAME:
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return current_user
 
@@ -403,45 +403,26 @@ async def health_check():
         }
 
 
-# ==================== 版本检查和更新日志接口 ====================
-import httpx
+# ==================== 版本检查（本地版本，已移除外部服务器调用） ====================
 
 @app.get('/api/version/check')
 async def check_version():
-    """检查最新版本（代理外部接口）"""
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get('https://xianyu.zhinianblog.cn/index.php?action=getVersion')
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except Exception:
-                    # 如果不是有效JSON，返回HTML内容
-                    return {"html": response.text}
-            else:
-                return {"error": True, "message": f"远程服务返回状态码: {response.status_code}"}
-    except Exception as e:
-        logger.error(f"检查版本失败: {e}")
-        return {"error": True, "message": f"检查版本失败: {str(e)}"}
+    """返回本地版本信息（已移除外部服务器调用以保护隐私）"""
+    return {
+        "version": "1.0.0",
+        "message": "版本检查已禁用外部调用",
+        "local_only": True
+    }
 
 
 @app.get('/api/version/changelog')
 async def get_changelog():
-    """获取更新日志（代理外部接口）"""
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get('https://xianyu.zhinianblog.cn/index.php?action=getUpdateInfo')
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except Exception:
-                    # 如果不是有效JSON，返回HTML内容
-                    return {"html": response.text}
-            else:
-                return {"error": True, "message": f"远程服务返回状态码: {response.status_code}"}
-    except Exception as e:
-        logger.error(f"获取更新日志失败: {e}")
-        return {"error": True, "message": f"获取更新日志失败: {str(e)}"}
+    """返回本地更新日志（已移除外部服务器调用以保护隐私）"""
+    return {
+        "changelog": [],
+        "message": "更新日志已禁用外部调用",
+        "local_only": True
+    }
 
 
 # 服务 React 前端 SPA - 所有前端路由都返回 index.html
@@ -665,14 +646,14 @@ async def change_admin_password(request: ChangePasswordRequest, admin_user: Dict
 
     try:
         # 验证当前密码（使用用户表验证）
-        if not db_manager.verify_user_password('admin', request.current_password):
+        if not db_manager.verify_user_password(ADMIN_USERNAME, request.current_password):
             return {"success": False, "message": "当前密码错误"}
 
         # 更新密码（使用用户表更新）
-        success = db_manager.update_user_password('admin', request.new_password)
+        success = db_manager.update_user_password(ADMIN_USERNAME, request.new_password)
 
         if success:
-            logger.info(f"【admin#{admin_user['user_id']}】管理员密码修改成功")
+            logger.info(f"【{ADMIN_USERNAME}#{admin_user['user_id']}】管理员密码修改成功")
             return {"success": True, "message": "密码修改成功"}
         else:
             return {"success": False, "message": "密码修改失败"}
@@ -724,13 +705,17 @@ async def check_default_password(current_user: Dict[str, Any] = Depends(get_curr
         logger.info(f"检查默认密码: username={username}, is_admin={is_admin}")
         
         # 只检查admin用户
-        if not is_admin or username != 'admin':
+        if not is_admin or username != ADMIN_USERNAME:
             logger.info(f"非admin用户，跳过检查")
             return {"using_default": False}
 
+        if not DEFAULT_ADMIN_PASSWORD:
+            logger.warning("ADMIN_PASSWORD 未设置，跳过默认密码检测")
+            return {"using_default": False}
+
         # 检查是否使用默认密码
-        using_default = db_manager.verify_user_password('admin', DEFAULT_ADMIN_PASSWORD)
-        logger.info(f"默认密码检查结果: {using_default}, DEFAULT_ADMIN_PASSWORD={DEFAULT_ADMIN_PASSWORD}")
+        using_default = db_manager.verify_user_password(ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD)
+        logger.info(f"默认密码检查结果: {using_default}")
         
         return {"using_default": using_default}
 
@@ -1117,7 +1102,7 @@ async def register(request: RegisterRequest):
 
 # 固定的API秘钥（生产环境中应该从配置文件或环境变量读取）
 # 注意：现在从系统设置中读取QQ回复消息秘钥
-API_SECRET_KEY = "xianyu_api_secret_2024"  # 保留作为后备
+API_SECRET_KEY = os.getenv('API_SECRET_KEY', secrets.token_urlsafe(32))  # 使用环境变量或随机生成
 
 class SendMessageRequest(BaseModel):
     api_key: str
@@ -1176,17 +1161,11 @@ async def send_message_api(request: SendMessageRequest):
                 message="API秘钥不能为空"
             )
 
-        # 特殊测试秘钥处理
-        if cleaned_api_key == "zhinina_test_key":
-            logger.info("使用测试秘钥，直接返回成功")
-            return SendMessageResponse(
-                success=True,
-                message="接口验证成功"
-            )
+        # 已移除测试后门 - 所有请求必须使用正确的API密钥
 
         # 验证API秘钥
         if not verify_api_key(cleaned_api_key):
-            logger.warning(f"API秘钥验证失败: {cleaned_api_key}")
+            logger.warning("API秘钥验证失败")
             return SendMessageResponse(
                 success=False,
                 message="API秘钥验证失败"
@@ -2101,7 +2080,7 @@ async def get_account_face_verification_screenshot(
         username = current_user['username']
         
         # 如果是管理员，允许访问所有账号
-        is_admin = username == 'admin'
+        is_admin = username == ADMIN_USERNAME
         
         if not is_admin:
             cookie_info = db_manager.get_cookie_details(account_id)

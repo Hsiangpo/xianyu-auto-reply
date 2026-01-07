@@ -181,9 +181,9 @@ echo.
 echo 📱 访问地址:
 echo    HTTP: http://localhost:8080
 echo.
-echo 🔐 默认登录信息:
+echo 🔐 登录信息:
 echo    用户名: admin
-echo    密码:   admin123
+echo    密码:   使用 ADMIN_PASSWORD 环境变量设置
 echo.
 echo 📊 管理命令:
 echo    查看状态: %~nx0 status
