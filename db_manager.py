@@ -63,6 +63,13 @@ class DBManager:
         if os.getenv('SQL_LOG_ENABLED'):
             self.sql_log_enabled = os.getenv('SQL_LOG_ENABLED', 'true').lower() == 'true'
 
+        if os.getenv('SQL_LOG_LEVEL'):
+            self.sql_log_level = os.getenv('SQL_LOG_LEVEL', 'INFO').upper()
+
+        logger.info(f"SQL日志配置: enabled={self.sql_log_enabled}, level={self.sql_log_level}")
+
+        self.init_db()
+
     def _get_password_cipher(self) -> Optional[Fernet]:
         key = os.getenv('PASSWORD_ENCRYPTION_KEY')
         if not key:
@@ -119,13 +126,7 @@ class DBManager:
                 logger.error(f"登录密码解密失败: {e}")
                 return ""
         return stored_value
-        if os.getenv('SQL_LOG_LEVEL'):
-            self.sql_log_level = os.getenv('SQL_LOG_LEVEL', 'INFO').upper()
 
-        logger.info(f"SQL日志已启用，日志级别: {self.sql_log_level}")
-
-        self.init_db()
-    
     def init_db(self):
         """初始化数据库表结构"""
         try:
